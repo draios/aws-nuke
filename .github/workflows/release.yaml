@@ -8,97 +8,58 @@ permissions:
   pull-requests: write
 
 jobs:
-  update_readme:
-    name: Update Readme
-    runs-on: ubuntu-22.04
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        ref: main
-    - name: Update versions in readme
-      run: |
-        sed -r -i "s/aws-nuke:v[0-9]+\.[0-9]+\.[0-9]+/aws-nuke:${{ github.ref_name }}/" README.md
-        sed -r -i "s/aws-nuke-v[0-9]+\.[0-9]+\.[0-9]+/aws-nuke-${{ github.ref_name }}/" README.md
-        sed -r -i "s/\/v[0-9]+\.[0-9]+\.[0-9]+\//\/${{ github.ref_name }}\//" README.md
-    - uses: peter-evans/create-pull-request@v5
-      name: Create Pull Request
-      with:
-        title: Update readme for ${{ github.ref_name }} release
-        commit-message: Update readme for ${{ github.ref_name }} release
-        body: Updating version references in the readme to ${{ github.ref_name }}
-        branch: update-readme-${{ github.ref_name }}
-        delete-branch: true
-
-  release:
-    name: Publish binaries
-    runs-on: ubuntu-22.04
-    steps:
-    - name: Setup Go
-      uses: actions/setup-go@v3
-      with:
-        go-version: '1.21'
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: Build Project binaries
-      env:
-        CGO_ENABLED: 0
-      run: |
-        make xc
-    - name: Upload binaries to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: dist/aws*
-        tag: ${{ github.ref }}
-        overwrite: true
-        file_glob: true
 
   docker_build:
-    runs-on: ubuntu-22.04
-    name: Docker Build
-
+    runs-on: self-hosted
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
+    - uses: draios/infra-actions-buildnpush@main
       with:
-        fetch-depth: 0
+        push_to_quay: true
+        image_name: "sysdig-aws-nuke"
+        image_description: "image for sysdig-aws-nuke"
+        context_path: "."
+        dockerfile: "Dockerfile"
+        dry_run: ${{ ! ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')) }}
+        artifactory_prefix: "docker.internal.sysdig.com/utils"
+        artifactory_username: ${{ secrets.ARTIFACTORY_USERNAME }}
+        artifactory_password: ${{ secrets.ARTIFACTORY_PASSWORD }}
+        quay_username: ${{ secrets.QUAY_USERNAME }}
+        quay_password: ${{ secrets.QUAY_PASSWORD }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Generate image tags
-      shell: bash
-      run: echo "tags=quay.io/rebuy/aws-nuke:${GITHUB_REF#refs/tags/},docker.io/rebuy/aws-nuke:${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-      id: generate_tags
 
-    - name: Set up QEMU
-      id: qemu
-      uses: docker/setup-qemu-action@v2
-      with:
-        platforms: arm64
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-      with:
-        install: true
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-
-    - name: Login to Quay.io
-      uses: docker/login-action@v2
-      with:
-        registry: quay.io
-        username: ${{ secrets.QUAY_USERNAME }}
-        password: ${{ secrets.QUAY_PASSWORD }}
-
-    - name: Build and push
-      uses: docker/build-push-action@v3
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.generate_tags.outputs.tags }}
-        platforms: linux/amd64,linux/arm64
+  goreleaser:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.21'
+      - name: Retag everything
+        continue-on-error: true
+        shell: bash
+        run: |
+          git tag --list | grep "container/" | while read -r not_semver_tag; do
+            semver_tag="v$(echo ${not_semver_tag} | cut -d'-' -f 3)"
+            git tag ${semver_tag} ${not_semver_tag} 2> /dev/null || true
+          done
+      - name: Set GoReleaser CURRENT and PREVIOUS tags
+        shell: bash
+        run: |
+          echo "GORELEASER_CURRENT_TAG=$(git tag --list --sort=v:refname | grep -v "container/" | tail -n1 | cut -d'-' -f 3)" >> $GITHUB_ENV
+          echo "GORELEASER_PREVIOUS_TAG=$(git tag --list --sort=v:refname | grep -v "container/" | tail -n2 | head -n1 | cut -d'-' -f 3)" >> $GITHUB_ENV
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v2
+        if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')) }}
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
