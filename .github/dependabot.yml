@@ -1,15 +1,28 @@
-# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
 updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    target-branch: main
+    assignees: ["josesolisrosales"]
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "main"
+    allowed_updates:
+      - match:
+        update_type: "security"
+    assignees: ["josesolisrosales"]
+
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "tuesday"
-      time: "10:00"
-      timezone: "Europe/Berlin"
-    groups:
-      golang:
-        patterns:
-          - "*"
+    target-branch: main
+    allowed_updates:
+      - match:
+        update_type: "security"
+    assignees: ["josesolisrosales"]
